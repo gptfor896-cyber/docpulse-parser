@@ -103,21 +103,27 @@ export default async function handler(req, res) {
       const sku = row[IDX_SKU];
       if (!sku) continue;
 
-      const qtySale = toNumber(row[IDX_QTY_SALE]);
-      const amountSale = toNumber(row[IDX_AMOUNT_SALE]);
-
-      const qtyReturn = toNumber(row[IDX_QTY_RETURN]);
-      const amountReturn = toNumber(row[IDX_AMOUNT_RETURN]);
-
       const orderNumber = row[IDX_ORDER_NUMBER] ?? null;
       const orderDateVal = row[IDX_ORDER_DATE] ?? null;
 
       let orderDate = null;
+
       if (orderDateVal instanceof Date) {
+        // если xlsx уже отдал нам объект Date
         orderDate = orderDateVal.toISOString().slice(0, 10);
+      } else if (typeof orderDateVal === "number") {
+        // если дата в виде числового кода Excel
+        const d = XLSX.SSF.parse_date_code(orderDateVal);
+        if (d) {
+          const mm = String(d.m).padStart(2, "0");
+          const dd = String(d.d).padStart(2, "0");
+          orderDate = `${d.y}-${mm}-${dd}`; // формат YYYY-MM-DD
+        }
       } else if (typeof orderDateVal === "string") {
+        // если вдруг придёт строкой — берём как есть
         orderDate = orderDateVal;
       }
+
 
       // Продажа
       if (amountSale !== 0) {
