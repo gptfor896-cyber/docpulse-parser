@@ -1,11 +1,12 @@
 export const config = {
-  runtime: "nodejs", // важная строка – говорим Vercel использовать Node.js, а не Edge
+  runtime: "nodejs", // работаем в обычном Node.js окружении
 };
 
 import ExcelJS from "exceljs";
 
 export default async function handler(req, res) {
   try {
+    // 1. Проверяем метод
     if (req.method !== "POST") {
       return res.status(405).json({
         ok: false,
@@ -22,7 +23,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 1. Скачиваем файл (используем встроенный fetch, БЕЗ node-fetch)
+    // 2. Скачиваем файл (используем встроенный fetch, БЕЗ node-fetch)
     const response = await fetch(fileUrl);
     if (!response.ok) {
       return res.status(400).json({
@@ -33,38 +34,29 @@ export default async function handler(req, res) {
 
     const arrayBuffer = await response.arrayBuffer();
 
-    // 2. Читаем Excel
+    // 3. Читаем Excel
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(Buffer.from(arrayBuffer));
 
-    const sheet = workbook.getWorksheet(1); // Первый лист
-
-    let operations = [];
-
-    // 2.1. Находим строку заголовков (ищем ячейку с текстом "Артикул продавца")
-    let headerRowIndex = null;
-
-    sheet.eachRow((row, rowNumber) => {
-      const text = row.values
-        .map((v) => (typeof v === "string" ? v : ""))
-        .join(" ");
-      if (text.includes("Артикул продавца")) {
-        headerRowIndex = rowNumber;
-      }
-    });
-
-    if (!headerRowIndex) {
+    // Берём первый лист
+    const sheet = workbook.getWorksheet(1);
+    if (!sheet) {
       return res.status(400).json({
         ok: false,
-        error: "Header row not found (no 'Артикул продавца')",
+        error: "No worksheet found in workbook",
       });
     }
 
+    // 🧠 ВАЖНО: фиксируем номер строки с заголовками
+    const headerRowIndex = 14; // ты говорил: на 14 строке заголовки
     const headerRow = sheet.getRow(headerRowIndex);
+
+    // Получаем массив заголовков
     const headers = headerRow.values.map((h) =>
       typeof h === "string" ? h.trim() : ""
     );
 
+    // Удобная функция: по имени колонки получить её индекс
     const col = (name) => headers.indexOf(name);
 
     const colSku = col("Артикул продавца");
@@ -73,40 +65,63 @@ export default async function handler(req, res) {
     const colQtyReturn = col("Количество возвратов");
     const colAmountReturn = col("Итого возвращено, руб.");
 
-    // 3. Идём по строкам ниже заголовков
+    if (colSku === -1) {
+      return res.status(400).json({
+        ok: false,
+        error: "Column 'Артикул продавца' not found in header row 14",
+        headers,
+      });
+    }
+
+    let operations = [];
+
+    // 4. Идём по всем строкам НИЖЕ заголовков
     for (let i = headerRowIndex + 1; i <= sheet.rowCount; i++) {
       const row = sheet.getRow(i);
       if (!row || !row.values) continue;
 
-      const sku = colSku > 0 ? row.getCell(colSku).value : null;
-      if (!sku) continue; // пустая строка – пропускаем
+      // Если строка совсем пустая — пропускаем
+      const isEmpty = row.values
+        .slice(1)
+        .every((v) => v === null || v === undefined || v === "");
+      if (isEmpty) continue;
 
-      const qtySale = colQtySale > 0 ? row.getCell(colQtySale).value || 0 : 0;
-      const amountSale =
-        colAmountSale > 0 ? row.getCell(colAmountSale).value || 0 : 0;
+      const sku = colSku > -1 ? row.getCell(colSku).value : null;
+      if (!sku) continue; // строка без артикула нам не нужна
 
-      const qtyReturn =
-        colQtyReturn > 0 ? row.getCell(colQtyReturn).value || 0 : 0;
-      const amountReturn =
-        colAmountReturn > 0 ? row.getCell(colAmountReturn).value || 0 : 0;
+      const rawQtySale =
+        colQtySale > -1 ? row.getCell(colQtySale).value ?? 0 : 0;
+      const rawAmountSale =
+        colAmountSale > -1 ? row.getCell(colAmountSale).value ?? 0 : 0;
+
+      const rawQtyReturn =
+        colQtyReturn > -1 ? row.getCell(colQtyReturn).value ?? 0 : 0;
+      const rawAmountReturn =
+        colAmountReturn > -1 ? row.getCell(colAmountReturn).value ?? 0 : 0;
+
+      const qtySale = Number(rawQtySale) || 0;
+      const amountSale = Number(rawAmountSale) || 0;
+
+      const qtyReturn = Number(rawQtyReturn) || 0;
+      const amountReturn = Number(rawAmountReturn) || 0;
 
       // Продажа
-      if (amountSale && Number(amountSale) !== 0) {
+      if (amountSale !== 0) {
         operations.push({
           operation_type: "sale",
-          sku,
-          quantity: Number(qtySale) || 0,
-          amount: Number(amountSale) || 0,
+          sku: String(sku),
+          quantity: qtySale,
+          amount: amountSale,
         });
       }
 
       // Возврат
-      if (amountReturn && Number(amountReturn) !== 0) {
+      if (amountReturn !== 0) {
         operations.push({
           operation_type: "return",
-          sku,
-          quantity: Number(qtyReturn) || 0,
-          amount: -Math.abs(Number(amountReturn) || 0),
+          sku: String(sku),
+          quantity: qtyReturn,
+          amount: -Math.abs(amountReturn),
         });
       }
     }
@@ -120,6 +135,8 @@ export default async function handler(req, res) {
     return res.status(500).json({
       ok: false,
       error: err.message,
+      // временно можно вернуть доп. инфу для дебага:
+      // stack: err.stack,
     });
   }
 }
