@@ -132,11 +132,11 @@ export default async function handler(req, res) {
       operations,
     });
   } catch (err) {
-  return res.status(500).json({
-    ok: false,
-    error: err.message,
-    stack: err.stack,   // 👈 добавили
-  });
-}
-
+    // ⬇️ вот тут ловим ПОЛНУЮ ошибку
+    return res.status(500).json({
+      ok: false,
+      error: err.message,
+      stack: err.stack,
+    });
+  }
 }
