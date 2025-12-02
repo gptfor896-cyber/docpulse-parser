@@ -6,46 +6,34 @@ import * as XLSX from "xlsx";
 
 export default async function handler(req, res) {
   try {
-    // 1. Только POST
     if (req.method !== "POST") {
-      return res.status(405).json({
-        ok: false,
-        error: "Use POST",
-      });
+      return res.status(405).json({ ok: false, error: "Use POST" });
     }
 
     const { fileUrl } = req.body || {};
-
     if (!fileUrl) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing fileUrl",
-      });
+      return res.status(400).json({ ok: false, error: "Missing fileUrl" });
     }
 
-    // 2. Скачиваем файл
+    // 1. Скачиваем файл
     const response = await fetch(fileUrl);
     if (!response.ok) {
-      return res.status(400).json({
-        ok: false,
-        error: `Failed to download file: ${response.status}`,
-      });
+      return res
+        .status(400)
+        .json({ ok: false, error: `Failed to download file: ${response.status}` });
     }
 
     const arrayBuffer = await response.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
 
-    // 3. Читаем XLSX через SheetJS
+    // 2. Читаем XLSX
     const workbook = XLSX.read(uint8, { type: "array" });
-
-    // Попробуем найти лист, в названии которого есть "Отчет" (если нет — берём первый)
-    const targetSheetName =
+    const sheetName =
       workbook.SheetNames.find((n) =>
         String(n).toLowerCase().includes("отчет")
       ) || workbook.SheetNames[0];
 
-    const sheet = workbook.Sheets[targetSheetName];
-
+    const sheet = workbook.Sheets[sheetName];
     if (!sheet) {
       return res.status(400).json({
         ok: false,
@@ -54,112 +42,170 @@ export default async function handler(req, res) {
       });
     }
 
-    // Преобразуем лист в массив строк
     const rows = XLSX.utils.sheet_to_json(sheet, {
-      header: 1, // [ [ячейки 1 строки], [ячейки 2 строки] ... ]
+      header: 1,
       raw: true,
     });
 
     if (!rows || rows.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "Sheet is empty",
-      });
+      return res.status(400).json({ ok: false, error: "Sheet is empty" });
     }
 
-    // 4. Ищем строку с заголовками — там, где встречается "Артикул"
-    let headerRowIndex = -1;
+    // 3. Находим строку с "№ п/п" — верхняя шапка (13-я в твоём файле)
+    let headerTopIndex = -1;
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!row) continue;
-
-      const joined = row
-        .map((c) => (c === null || c === undefined ? "" : String(c)))
-        .join(" ")
-        .toLowerCase();
-
-      if (joined.includes("артикул продавца") || joined.includes("артикул")) {
-        headerRowIndex = i;
+      const first = row[0];
+      if (typeof first === "string" && first.trim().startsWith("№ п/п")) {
+        headerTopIndex = i;
         break;
       }
     }
 
-    if (headerRowIndex === -1) {
-      // Не нашли вообще строку с "Артикул" — вернём немного дебаг-инфы
+    if (headerTopIndex === -1) {
       return res.status(400).json({
         ok: false,
-        error: "Header row with 'Артикул' not found in any row",
-        sheetNames: workbook.SheetNames,
+        error: "Top header row with '№ п/п' not found",
         sampleFirstRows: rows.slice(0, 25),
       });
     }
 
-    const headerRow = rows[headerRowIndex] || [];
+    const headerTop = rows[headerTopIndex] || [];
+    const headerSecond = rows[headerTopIndex + 1] || [];
 
-    const headers = headerRow.map((h) =>
-      h === undefined || h === null ? "" : String(h).trim()
-    );
+    // Нормализуем строки
+    const normRow = (row) =>
+      row.map((v) =>
+        v === null || v === undefined ? "" : String(v).trim()
+      );
 
-    const col = (name) => headers.indexOf(name);
+    const top = normRow(headerTop);
+    const second = normRow(headerSecond);
 
-    const colSku = col("Артикул продавца");
-    const colQtySale = col("Количество");
-    const colAmountSale = col("Итого к начислению, руб.");
-    const colQtyReturn = col("Количество возвратов");
-    const colAmountReturn = col("Итого возвращено, руб.");
+    // Функции поиска индексов
+    const findIndex = (row, predicate) =>
+      row.findIndex((v, idx) => predicate(v, idx));
 
+    const topIdx = (name) =>
+      findIndex(top, (v) => v === name || v.includes(name));
+    const secondIdx = (name) =>
+      findIndex(second, (v) => v === name || v.includes(name));
+
+    // 4. Находим нужные колонки
+
+    // SKU (из первой шапки)
+    const colSku = topIdx("SKU"); // в твоём файле это 4-й столбец
     if (colSku === -1) {
-      // Не нашли нужное имя колонки даже в найденной строке заголовка
       return res.status(400).json({
         ok: false,
-        error:
-          "Column 'Артикул продавца' not found in detected header row",
-        detectedHeaderRowIndex: headerRowIndex + 1, // человеко-читаемый (1-based)
-        headers,
+        error: "Column 'SKU' not found in top header",
+        headerTop: top,
+      });
+    }
+
+    // Кол-во продаж и возвратов (второй ряд шапки)
+    const qtyCols = [];
+    second.forEach((v, idx) => {
+      if (v === "Кол-во") qtyCols.push(idx);
+    });
+
+    const colQtySale = qtyCols[0] ?? -1;   // под блоком "Реализовано"
+    const colQtyReturn = qtyCols[1] ?? -1; // под блоком "Возвращено клиентом"
+
+    // Сумма продажи и сумма возврата
+    const colAmountSale = secondIdx("Итого к начислению, руб.");
+    const colAmountReturn = secondIdx("Итого возвращено, руб.");
+
+    // Номер и дата отправления (последний блок "Отправление")
+    const colOrderNumber = secondIdx("Номер"); // но таких может быть 2 — нам нужен тот, что ближе к концу
+    const colOrderDate = secondIdx("Дата");    // тут тоже 2 "Дата", ниже уточним
+
+    // Уточняем номер и дату отправления: берём те столбцы, где top === "Отправление"
+    const colBlockOtpravlenie = topIdx("Отправление");
+    let realOrderNumberCol = -1;
+    let realOrderDateCol = -1;
+
+    for (let idx = 0; idx < second.length; idx++) {
+      if (second[idx] === "Номер" && idx >= colBlockOtpravlenie) {
+        realOrderNumberCol = idx;
+      }
+      if (second[idx] === "Дата" && idx >= colBlockOtpravlenie) {
+        // первый "Дата" после блока "Отправление" считаем датой отправления
+        if (realOrderDateCol === -1) realOrderDateCol = idx;
+      }
+    }
+
+    // 5. Находим первую строку данных — где первый столбец = 1, 2, 3 и т.д.
+    let dataStartIndex = -1;
+    for (let i = headerTopIndex + 2; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row) continue;
+      const cell0 = row[0];
+      if (typeof cell0 === "number") {
+        dataStartIndex = i;
+        break;
+      }
+    }
+
+    if (dataStartIndex === -1) {
+      return res.status(400).json({
+        ok: false,
+        error: "No data rows found after header",
       });
     }
 
     const operations = [];
 
-    // 5. Проходим по всем строкам ниже заголовков
-    for (let i = headerRowIndex + 1; i < rows.length; i++) {
+    // 6. Проходим по строкам данных
+    for (let i = dataStartIndex; i < rows.length; i++) {
       const row = rows[i];
       if (!row) continue;
 
-      // Проверяем, пустая ли строка
+      // Проверяем, не пустая ли строка
       const isEmpty = row.every(
         (v) => v === null || v === undefined || v === ""
       );
       if (isEmpty) continue;
 
-      const sku = colSku > -1 ? row[colSku] : null;
+      const rowNum = row[0];
+      if (typeof rowNum !== "number") {
+        // Если первый столбец перестал быть числом — значит, таблица кончилась
+        break;
+      }
+
+      const sku = row[colSku];
       if (!sku) continue;
 
-      const rawQtySale = colQtySale > -1 ? row[colQtySale] ?? 0 : 0;
-      const rawAmountSale =
-        colAmountSale > -1 ? row[colAmountSale] ?? 0 : 0;
+      const getNum = (val) => {
+        if (val === null || val === undefined || val === "") return 0;
+        if (typeof val === "number") return val;
+        const s = String(val).replace(" ", "").replace(",", ".");
+        const parsed = Number(s);
+        return isNaN(parsed) ? 0 : parsed;
+      };
 
-      const rawQtyReturn =
-        colQtyReturn > -1 ? row[colQtyReturn] ?? 0 : 0;
-      const rawAmountReturn =
-        colAmountReturn > -1 ? row[colAmountReturn] ?? 0 : 0;
-
-      const qtySale = Number(rawQtySale) || 0;
+      const qtySale = colQtySale !== -1 ? getNum(row[colQtySale]) : 0;
       const amountSale =
-        Number(
-          typeof rawAmountSale === "string"
-            ? rawAmountSale.replace(",", ".")
-            : rawAmountSale
-        ) || 0;
+        colAmountSale !== -1 ? getNum(row[colAmountSale]) : 0;
 
-      const qtyReturn = Number(rawQtyReturn) || 0;
+      const qtyReturn =
+        colQtyReturn !== -1 ? getNum(row[colQtyReturn]) : 0;
       const amountReturn =
-        Number(
-          typeof rawAmountReturn === "string"
-            ? rawAmountReturn.replace(",", ".")
-            : rawAmountReturn
-        ) || 0;
+        colAmountReturn !== -1 ? getNum(row[colAmountReturn]) : 0;
+
+      const orderNumber =
+        realOrderNumberCol !== -1 ? row[realOrderNumberCol] : null;
+      const orderDateVal =
+        realOrderDateCol !== -1 ? row[realOrderDateCol] : null;
+
+      let orderDate = null;
+      if (orderDateVal instanceof Date) {
+        orderDate = orderDateVal.toISOString().slice(0, 10);
+      } else if (typeof orderDateVal === "string") {
+        orderDate = orderDateVal;
+      }
 
       // Продажа
       if (amountSale !== 0) {
@@ -168,6 +214,8 @@ export default async function handler(req, res) {
           sku: String(sku),
           quantity: qtySale,
           amount: amountSale,
+          order_number: orderNumber ? String(orderNumber) : null,
+          order_date: orderDate,
         });
       }
 
@@ -178,6 +226,8 @@ export default async function handler(req, res) {
           sku: String(sku),
           quantity: qtyReturn,
           amount: -Math.abs(amountReturn),
+          order_number: orderNumber ? String(orderNumber) : null,
+          order_date: orderDate,
         });
       }
     }
