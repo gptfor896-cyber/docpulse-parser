@@ -39,7 +39,7 @@ export default async function handler(req, res) {
     if (!sheet) {
       return res.status(400).json({
         ok: false,
-        error: "Target sheet not found",
+        error: "Sheet not found",
         sheetNames: workbook.SheetNames,
       });
     }
@@ -49,17 +49,17 @@ export default async function handler(req, res) {
       raw: true,
     });
 
-    if (!rows || rows.length === 0) {
+    if (!rows || !rows.length) {
       return res.status(400).json({ ok: false, error: "Sheet is empty" });
     }
 
-    // 3. Находим первую строку данных: где в первом столбце число (1, 2, 3...)
+    // 3. Находим первую строку данных – где первый столбец число (1, 2, 3...)
     let dataStartIndex = -1;
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!row) continue;
-      const cell0 = row[0];
-      if (typeof cell0 === "number") {
+      const v = row[0];
+      if (typeof v === "number") {
         dataStartIndex = i;
         break;
       }
@@ -68,41 +68,49 @@ export default async function handler(req, res) {
     if (dataStartIndex === -1) {
       return res.status(400).json({
         ok: false,
-        error: "No data rows found (no numeric index in first column)",
+        error: "No data rows (no numeric index in first column)",
+        sampleFirstRows: rows.slice(0, 25),
       });
     }
 
-    const getNum = (val) => {
+    // Индексы колонок по позиции (0-based)
+    const IDX_SKU = 4;            // E (5-й столбец)
+    const IDX_QTY_SALE = 8;       // I (9-й)
+    const IDX_AMOUNT_SALE = 13;   // N (14-й, 'Итого к начислению, руб.')
+    const IDX_QTY_RETURN = 17;    // R (18-й)
+    const IDX_AMOUNT_RETURN = 20; // U (21-й, 'Итого возвращено, руб.')
+    const IDX_ORDER_NUMBER = 21;  // V (22-й)
+    const IDX_ORDER_DATE = 22;    // W (23-й)
+
+    const toNumber = (val) => {
       if (val === null || val === undefined || val === "") return 0;
       if (typeof val === "number") return val;
-      const s = String(val).replace(" ", "").replace(",", ".");
-      const parsed = Number(s);
-      return isNaN(parsed) ? 0 : parsed;
+      const s = String(val).replace(/\s/g, "").replace(",", ".");
+      const n = Number(s);
+      return isNaN(n) ? 0 : n;
     };
 
     const operations = [];
 
-    // 4. Проходим по всем строкам данных
+    // 4. Проходим по строкам данных
     for (let i = dataStartIndex; i < rows.length; i++) {
       const row = rows[i];
       if (!row) continue;
 
-      // Таблица кончилась, когда первый столбец перестал быть числом
-      const rowNum = row[0];
-      if (typeof rowNum !== "number") break;
+      const idxVal = row[0];
+      if (typeof idxVal !== "number") break; // таблица кончилась
 
-      // Могут быть обрезанные строки, поэтому берём через || null
-      const sku = row[4] ?? null;          // колонка 5 (SKU)
+      const sku = row[IDX_SKU];
       if (!sku) continue;
 
-      const qtySale = getNum(row[8]);      // колонка 9 — Кол-во продаж
-      const amountSale = getNum(row[13]);  // колонка 14 — Итого к начислению, руб.
+      const qtySale = toNumber(row[IDX_QTY_SALE]);
+      const amountSale = toNumber(row[IDX_AMOUNT_SALE]);
 
-      const qtyReturn = getNum(row[17]);   // колонка 18 — Кол-во возвратов
-      const amountReturn = getNum(row[20]); // колонка 21 — Итого возвращено, руб.
+      const qtyReturn = toNumber(row[IDX_QTY_RETURN]);
+      const amountReturn = toNumber(row[IDX_AMOUNT_RETURN]);
 
-      const orderNumber = row[21] ?? null; // колонка 22 — Номер отправления
-      const orderDateVal = row[22] ?? null; // колонка 23 — Дата отправления
+      const orderNumber = row[IDX_ORDER_NUMBER] ?? null;
+      const orderDateVal = row[IDX_ORDER_DATE] ?? null;
 
       let orderDate = null;
       if (orderDateVal instanceof Date) {
