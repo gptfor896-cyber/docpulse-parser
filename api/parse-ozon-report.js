@@ -103,6 +103,12 @@ export default async function handler(req, res) {
       const sku = row[IDX_SKU];
       if (!sku) continue;
 
+      const qtySale = toNumber(row[IDX_QTY_SALE]);
+      const amountSale = toNumber(row[IDX_AMOUNT_SALE]);
+
+      const qtyReturn = toNumber(row[IDX_QTY_RETURN]);
+      const amountReturn = toNumber(row[IDX_AMOUNT_RETURN]);
+
       const orderNumber = row[IDX_ORDER_NUMBER] ?? null;
       const orderDateVal = row[IDX_ORDER_DATE] ?? null;
 
@@ -123,7 +129,6 @@ export default async function handler(req, res) {
         // если вдруг придёт строкой — берём как есть
         orderDate = orderDateVal;
       }
-
 
       // Продажа
       if (amountSale !== 0) {
