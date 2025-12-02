@@ -1,0 +1,8 @@
+{
+  "name": "docpulse-parser",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  }
+}
