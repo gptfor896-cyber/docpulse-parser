@@ -1,12 +1,12 @@
 export const config = {
-  runtime: "nodejs", // работаем в обычном Node.js окружении
+  runtime: "nodejs",
 };
 
-import ExcelJS from "exceljs";
+import * as XLSX from "xlsx";
 
 export default async function handler(req, res) {
   try {
-    // 1. Проверяем метод
+    // 1. Только POST
     if (req.method !== "POST") {
       return res.status(405).json({
         ok: false,
@@ -14,7 +14,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const { fileUrl } = req.body;
+    const { fileUrl } = req.body || {};
 
     if (!fileUrl) {
       return res.status(400).json({
@@ -23,7 +23,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. Скачиваем файл (используем встроенный fetch, БЕЗ node-fetch)
+    // 2. Скачиваем файл
     const response = await fetch(fileUrl);
     if (!response.ok) {
       return res.status(400).json({
@@ -33,30 +33,43 @@ export default async function handler(req, res) {
     }
 
     const arrayBuffer = await response.arrayBuffer();
+    const uint8 = new Uint8Array(arrayBuffer);
 
-    // 3. Читаем Excel
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(Buffer.from(arrayBuffer));
+    // 3. Читаем XLSX через SheetJS
+    const workbook = XLSX.read(uint8, { type: "array" });
 
-    // Берём первый лист
-    const sheet = workbook.getWorksheet(1);
-    if (!sheet) {
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) {
       return res.status(400).json({
         ok: false,
-        error: "No worksheet found in workbook",
+        error: "No sheets in workbook",
       });
     }
 
-    // 🧠 ВАЖНО: фиксируем номер строки с заголовками
-    const headerRowIndex = 14; // ты говорил: на 14 строке заголовки
-    const headerRow = sheet.getRow(headerRowIndex);
+    const sheet = workbook.Sheets[firstSheetName];
 
-    // Получаем массив заголовков
-    const headers = headerRow.values.map((h) =>
-      typeof h === "string" ? h.trim() : ""
+    // Преобразуем лист в массив строк (каждая строка — массив ячеек)
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,    // вернёт [ [ячейки первой строки], [ячейки второй] ... ]
+      raw: true,
+    });
+
+    if (!rows || rows.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Sheet is empty",
+      });
+    }
+
+    // 🧠 ВАЖНО: в Excel заголовки на 14-й строке → индекс 13 (0-based)
+    const headerRowIndex = 13;
+    const headerRow = rows[headerRowIndex] || [];
+
+    const headers = headerRow.map((h) =>
+      h === undefined || h === null ? "" : String(h).trim()
     );
 
-    // Удобная функция: по имени колонки получить её индекс
+    // Функция: получить индекс колонки по названию
     const col = (name) => headers.indexOf(name);
 
     const colSku = col("Артикул продавца");
@@ -73,37 +86,43 @@ export default async function handler(req, res) {
       });
     }
 
-    let operations = [];
+    const operations = [];
 
-    // 4. Идём по всем строкам НИЖЕ заголовков
-    for (let i = headerRowIndex + 1; i <= sheet.rowCount; i++) {
-      const row = sheet.getRow(i);
-      if (!row || !row.values) continue;
+    // 4. Проходим по всем строкам ниже заголовков
+    for (let i = headerRowIndex + 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row) continue;
 
-      // Если строка совсем пустая — пропускаем
-      const isEmpty = row.values
-        .slice(1)
-        .every((v) => v === null || v === undefined || v === "");
+      // Проверяем, пустая ли строка
+      const isEmpty = row.every(
+        (v) => v === null || v === undefined || v === ""
+      );
       if (isEmpty) continue;
 
-      const sku = colSku > -1 ? row.getCell(colSku).value : null;
-      if (!sku) continue; // строка без артикула нам не нужна
+      const sku = colSku > -1 ? row[colSku] : null;
+      if (!sku) continue;
 
-      const rawQtySale =
-        colQtySale > -1 ? row.getCell(colQtySale).value ?? 0 : 0;
-      const rawAmountSale =
-        colAmountSale > -1 ? row.getCell(colAmountSale).value ?? 0 : 0;
+      const rawQtySale = colQtySale > -1 ? row[colQtySale] ?? 0 : 0;
+      const rawAmountSale = colAmountSale > -1 ? row[colAmountSale] ?? 0 : 0;
 
       const rawQtyReturn =
-        colQtyReturn > -1 ? row.getCell(colQtyReturn).value ?? 0 : 0;
+        colQtyReturn > -1 ? row[colQtyReturn] ?? 0 : 0;
       const rawAmountReturn =
-        colAmountReturn > -1 ? row.getCell(colAmountReturn).value ?? 0 : 0;
+        colAmountReturn > -1 ? row[colAmountReturn] ?? 0 : 0;
 
       const qtySale = Number(rawQtySale) || 0;
-      const amountSale = Number(rawAmountSale) || 0;
+      const amountSale = Number(
+        typeof rawAmountSale === "string"
+          ? rawAmountSale.replace(",", ".")
+          : rawAmountSale
+      ) || 0;
 
       const qtyReturn = Number(rawQtyReturn) || 0;
-      const amountReturn = Number(rawAmountReturn) || 0;
+      const amountReturn = Number(
+        typeof rawAmountReturn === "string"
+          ? rawAmountReturn.replace(",", ".")
+          : rawAmountReturn
+      ) || 0;
 
       // Продажа
       if (amountSale !== 0) {
@@ -132,7 +151,6 @@ export default async function handler(req, res) {
       operations,
     });
   } catch (err) {
-    // ⬇️ вот тут ловим ПОЛНУЮ ошибку
     return res.status(500).json({
       ok: false,
       error: err.message,
