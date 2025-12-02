@@ -132,11 +132,11 @@ export default async function handler(req, res) {
       operations,
     });
   } catch (err) {
-    return res.status(500).json({
-      ok: false,
-      error: err.message,
-      // временно можно вернуть доп. инфу для дебага:
-      // stack: err.stack,
-    });
-  }
+  return res.status(500).json({
+    ok: false,
+    error: err.message,
+    stack: err.stack,   // 👈 добавили
+  });
+}
+
 }
