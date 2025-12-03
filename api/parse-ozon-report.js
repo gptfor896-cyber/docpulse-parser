@@ -90,6 +90,18 @@ export default async function handler(req, res) {
       return isNaN(n) ? 0 : n;
     };
 
+    // Преобразование excel-даты (кол-во дней с 1899-12-30) в YYYY-MM-DD
+    const excelDateToISO = (num) => {
+      if (typeof num !== "number") return null;
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30)); // 1899-12-30
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const d = new Date(excelEpoch.getTime() + num * msPerDay);
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(d.getUTCDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    };
+
     const operations = [];
 
     // 4. Проходим по строкам данных
@@ -115,18 +127,11 @@ export default async function handler(req, res) {
       let orderDate = null;
 
       if (orderDateVal instanceof Date) {
-        // если xlsx уже отдал нам объект Date
         orderDate = orderDateVal.toISOString().slice(0, 10);
       } else if (typeof orderDateVal === "number") {
-        // если дата в виде числового кода Excel
-        const d = XLSX.SSF.parse_date_code(orderDateVal);
-        if (d) {
-          const mm = String(d.m).padStart(2, "0");
-          const dd = String(d.d).padStart(2, "0");
-          orderDate = `${d.y}-${mm}-${dd}`; // формат YYYY-MM-DD
-        }
+        // excel serial date
+        orderDate = excelDateToISO(orderDateVal);
       } else if (typeof orderDateVal === "string") {
-        // если вдруг придёт строкой — берём как есть
         orderDate = orderDateVal;
       }
 
